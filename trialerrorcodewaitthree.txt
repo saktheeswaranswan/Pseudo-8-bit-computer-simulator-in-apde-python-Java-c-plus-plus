@@ -1,0 +1,514 @@
+// =============================================================================
+// 100% Faithful 8-Bit SAP-1 Computer Visualizer (Extended Architecture)
+// Optimized for APDE / Mobile Touchscreen Screens (Landscape & Portrait Auto-Fit)
+// Features: Dynamic BODMAS Arithmetic Compilation (ADD, SUB, MUL, DIV, STA)
+// =============================================================================
+
+int busX;
+ArrayList<Block> blocks = new ArrayList<Block>();
+ArrayList<Button> buttons = new ArrayList<Button>();
+ArrayList<Anim> activeAnims = new ArrayList<Anim>();
+ArrayList<String> executionLog = new ArrayList<String>();
+
+// CPU Registers and State
+int PC = 0, A = 0, B = 0, OUT_REG = 0, IR = 0, MAR = 0, ALU_RES = 0;
+int[] RAM = new int[16];
+
+// 6-State Clock Engine (T1 - T6)
+int cycleState = 0; 
+boolean isRunning = false;
+int lastTick = 0;
+int speedMode = 0; 
+int CLOCK_SPEED = 900; 
+float animSpeed = 0.04;
+
+// Display & Scroll State
+float scrollOffset = 0;
+float maxScroll = 0;
+int lastW = -1;
+int lastH = -1;
+
+// Block References
+Block bPC, bMAR, bRAM, bIR, bCU, bA, bALU, bB, bOUT;
+
+void setup() {
+  // Absolute full canvas usage - auto detects and adapts to device orientation
+  fullScreen();
+  checkResize();
+  loadDefaultProgram();
+}
+
+void checkResize() {
+  if (width != lastW || height != lastH) {
+    lastW = width;
+    lastH = height;
+    activeAnims.clear();
+    initializeLayout();
+  }
+}
+
+void initializeLayout() {
+  blocks.clear();
+  buttons.clear();
+  
+  busX = width / 2;
+  float lx = width * 0.24; 
+  float rx = width * 0.76;
+  float bw = width * 0.38;
+  float bh = height * 0.06;
+  
+  // Left Column Layout: Memory & Instruction Subsystems
+  bMAR = new Block(lx, height * 0.07, bw, bh, "MAR (Address Reg)");
+  bRAM = new Block(lx, height * 0.16, bw, bh, "RAM (16 x 8-Bit)");
+  bIR  = new Block(lx, height * 0.25, bw, bh, "INSTRUCTION REG (IR)");
+  bCU  = new Block(lx, height * 0.34, bw, bh, "CONTROLLER SEQUENCER");
+  
+  // Right Column Layout: Computational Engine & Processing Registers
+  bPC  = new Block(rx, height * 0.07, bw, bh, "PROGRAM COUNTER (PC)");
+  bA   = new Block(rx, height * 0.16, bw, bh, "ACCUMULATOR A");
+  bALU = new Block(rx, height * 0.25, bw, bh, "ALU (MATH UNIT)");
+  bB   = new Block(rx, height * 0.34, bw, bh, "B REGISTER");
+  bOUT = new Block(rx, height * 0.43, bw, bh, "OUTPUT REGISTER");
+  
+  blocks.add(bPC);  blocks.add(bMAR); blocks.add(bRAM); 
+  blocks.add(bIR);  blocks.add(bCU);  blocks.add(bA); 
+  blocks.add(bALU); blocks.add(bB);   blocks.add(bOUT);
+  
+  setupUI();
+}
+
+void setupUI() {
+  float by1 = height * 0.91;
+  float by2 = height * 0.965;
+  float btnW = width * 0.21;
+  float btnH = height * 0.04;
+  
+  buttons.add(new Button(width * 0.14, by1, btnW, btnH, "RUN", -1));
+  buttons.add(new Button(width * 0.38, by1, btnW, btnH, "STOP", -2));
+  buttons.add(new Button(width * 0.62, by1, btnW, btnH, "RESET", -3));
+  buttons.add(new Button(width * 0.86, by1, btnW, btnH, "SPEED", -4));
+  
+  buttons.add(new Button(width * 0.5, by2, width * 0.85, btnH, "GENERATE RANDOM BODMAS", -5));
+}
+
+void loadDefaultProgram() {
+  isRunning = false;
+  PC = 0; A = 0; B = 0; OUT_REG = 0; IR = 0; MAR = 0; ALU_RES = 0;
+  cycleState = 0;
+  activeAnims.clear();
+  executionLog.clear();
+  
+  for(int i=0; i<16; i++) RAM[i] = 0;
+  
+  // Extended Opcodes: 
+  // LDA=0x0, ADD=0x1, SUB=0x2, MUL=0x3, DIV=0x4, STA=0x5, OUT=0xE, HLT=0xF
+  
+  // Generate random data respecting 8-bit limits (No overflow > 255)
+  int valB = int(random(2, 10));
+  int valC = int(random(2, 10));
+  int valD = int(random(4, 40));
+  int valE = int(random(1, 5));
+  int valA = int(random(5, 50));
+  
+  RAM[9] = valA;
+  RAM[10] = valB;
+  RAM[11] = valC;
+  RAM[12] = valD;
+  RAM[13] = valE;
+  RAM[14] = 0; // Temp Store (For BODMAS Precedence execution)
+  
+  // COMPILING BODMAS: A + (B * C) - (D / E)
+  RAM[0] = 0x0C; // LDA 12 -> Load D
+  RAM[1] = 0x4D; // DIV 13 -> Divide by E
+  RAM[2] = 0x5E; // STA 14 -> Store Result in Temp
+  RAM[3] = 0x0A; // LDA 10 -> Load B
+  RAM[4] = 0x3B; // MUL 11 -> Multiply by C
+  RAM[5] = 0x19; // ADD 9  -> Add A
+  RAM[6] = 0x2E; // SUB 14 -> Subtract Temp (D/E)
+  RAM[7] = 0xE0; // OUT
+  RAM[8] = 0xF0; // HLT
+  
+  int expectedTarget = valA + (valB * valC) - (valD / valE);
+  
+  executionLog.add("SYSTEM: 8-Bit BODMAS sequence loaded.");
+  executionLog.add("Prog: " + valA + " + (" + valB + " * " + valC + ") - (" + valD + " / " + valE + ")");
+  executionLog.add("Target Result = " + expectedTarget);
+}
+
+void draw() {
+  checkResize();
+  background(18, 22, 28);
+  drawWBus();
+  
+  bPC.val  = "0000 " + binary(PC, 4);
+  bMAR.val = "0000 " + binary(MAR, 4);
+  bIR.val  = binary(IR, 8);
+  bA.val   = binary(A, 8) + " (" + A + ")";
+  bB.val   = binary(B, 8) + " (" + B + ")";
+  bOUT.val = binary(OUT_REG, 8);
+  bRAM.val = "MAR ADDR: [" + MAR + "] Data: " + binary(RAM[MAR], 8);
+  
+  // Predict ALU output continually
+  int currentOp = (IR >> 4) & 0x0F;
+  if (currentOp == 0x1) ALU_RES = (A + B) & 0xFF;
+  else if (currentOp == 0x2) ALU_RES = (A - B) & 0xFF;
+  else if (currentOp == 0x3) ALU_RES = (A * B) & 0xFF;
+  else if (currentOp == 0x4) ALU_RES = (B != 0) ? ((A / B) & 0xFF) : 0;
+  bALU.val = binary(ALU_RES, 8) + " [Ready]";
+
+  String stateDesc = "HALTED";
+  if (isRunning) {
+    if (cycleState == 0)      stateDesc = "T1: FETCH [PC -> MAR]";
+    else if (cycleState == 1) stateDesc = "T2: FETCH [PC++]; Clock Up";
+    else if (cycleState == 2) stateDesc = "T3: FETCH [RAM -> IR]";
+    else if (cycleState == 3) stateDesc = "T4: EXECUTE [Decode Opcode]";
+    else if (cycleState == 4) stateDesc = "T5: EXECUTE [RAM Comm.]";
+    else if (cycleState == 5) stateDesc = "T6: EXECUTE [ALU Math]";
+  }
+  bCU.val = stateDesc;
+  
+  for (Block b : blocks) b.display();
+  
+  drawOutputScreens();
+  drawRAMTable();
+  drawExecutionLog();
+  
+  for (Button btn : buttons) {
+    if (btn.cmd == -4) {
+      if (speedMode == 0) btn.label = "SPEED: NORM";
+      if (speedMode == 1) btn.label = "SPEED: SLOW";
+      if (speedMode == 2) btn.label = "SPEED: TURBO";
+    }
+    btn.display();
+  }
+  
+  for (int i = activeAnims.size() - 1; i >= 0; i--) {
+    Anim a = activeAnims.get(i);
+    a.update(animSpeed);
+    a.display();
+    if (a.isDone) activeAnims.remove(i);
+  }
+  
+  if (isRunning && activeAnims.isEmpty()) {
+    if (millis() - lastTick > CLOCK_SPEED) {
+      stepCPU();
+      lastTick = millis();
+    }
+  }
+}
+
+void drawWBus() {
+  stroke(230, 70, 70);
+  strokeWeight(max(8, width * 0.012));
+  line(busX, height * 0.04, busX, height * 0.49);
+  
+  stroke(70, 150, 230);
+  strokeWeight(3);
+  float rx = bA.x;
+  line(rx, bA.y + (bA.h*0.5), rx, bALU.y - (bALU.h*0.5)); 
+  line(rx, bB.y - (bB.h*0.5), rx, bALU.y + (bALU.h*0.5));
+  strokeWeight(1);
+}
+
+void drawOutputScreens() {
+  float yBase = height * 0.51;
+  float boxH = height * 0.085;
+  float tSize = min(width, height);
+  
+  fill(12, 16, 22); stroke(0, 230, 130); strokeWeight(2);
+  rectMode(CORNER);
+  rect(width * 0.05, yBase, width * 0.42, boxH, 6);
+  fill(0, 230, 130); textAlign(CENTER, CENTER);
+  textSize(tSize * 0.02); text("DECIMAL OUTPUT DISPLAY", width * 0.26, yBase + height * 0.02);
+  textSize(tSize * 0.06); text(OUT_REG, width * 0.26, yBase + height * 0.055);
+  
+  fill(12, 16, 22); stroke(255, 90, 90);
+  rect(width * 0.53, yBase, width * 0.42, boxH, 6);
+  fill(255, 90, 90); textAlign(CENTER, CENTER);
+  textSize(tSize * 0.02); text("8-BIT LED OUTPUT BUS", width * 0.74, yBase + height * 0.02);
+  
+  float ledW = width * 0.034;
+  float startX = width * 0.555;
+  for(int i = 7; i >= 0; i--) {
+    int bit = (OUT_REG >> i) & 1;
+    if(bit == 1) { fill(255, 40, 40); stroke(255, 150, 150); } 
+    else { fill(35, 10, 10); stroke(100, 30, 30); }
+    rect(startX + ((7-i) * (ledW + width * 0.01)), yBase + height * 0.045, ledW, height * 0.025, 3);
+  }
+}
+
+void drawRAMTable() {
+  float rw = width * 0.42;
+  float rh = height * 0.28;
+  float ry = height * 0.615;
+  float tSize = min(width, height);
+  
+  fill(12, 16, 22); stroke(80, 95, 115); strokeWeight(1.5);
+  rectMode(CORNER);
+  rect(width * 0.05, ry, rw, rh, 6);
+  
+  fill(255, 190, 0); textSize(tSize * 0.025); textAlign(LEFT, TOP);
+  text("RAM MEMORY", width * 0.07, ry + height * 0.01);
+  textSize(tSize * 0.015); fill(160);
+  text("(Tap lines to override data)", width * 0.07, ry + height * 0.035);
+  
+  fill(220); textSize(tSize * 0.022);
+  for(int i = 0; i < 8; i++) {
+    float yOffset = ry + height * 0.065 + (i * height * 0.026);
+    
+    if(MAR == i) fill(255, 80, 80); else fill(210);
+    text("[" + i + "] " + binary(RAM[i], 8), width * 0.065, yOffset);
+    
+    if(MAR == (i+8)) fill(255, 80, 80); else fill(210);
+    text("[" + (i+8) + "] " + binary(RAM[i+8], 8), width * 0.27, yOffset);
+  }
+}
+
+void drawExecutionLog() {
+  float lw = width * 0.42;
+  float lh = height * 0.28;
+  float ly = height * 0.615;
+  float tSize = min(width, height);
+  
+  fill(12, 16, 22); stroke(80, 95, 115);
+  rectMode(CORNER);
+  rect(width * 0.53, ly, lw, lh, 6);
+  
+  fill(0, 195, 255); textSize(tSize * 0.025); textAlign(LEFT, TOP);
+  text("LIVE EXECUTION LOG", width * 0.55, ly + height * 0.01);
+  
+  clip(width * 0.53, ly + height * 0.045, lw, lh - height * 0.05);
+  
+  fill(195, 210, 225); textSize(tSize * 0.018);
+  maxScroll = max(0, (executionLog.size() * height * 0.02) - (lh - height * 0.06));
+  scrollOffset = constrain(scrollOffset, -maxScroll, 0);
+  
+  for(int i = 0; i < executionLog.size(); i++) {
+    text(executionLog.get(i), width * 0.55, ly + height * 0.05 + (i * height * 0.02) + scrollOffset);
+  }
+  noClip();
+}
+
+void mouseDragged() {
+  if (mouseX > width * 0.53 && mouseY > height * 0.615 && mouseY < height * 0.895) {
+    scrollOffset += (mouseY - pmouseY);
+  }
+}
+
+void stepCPU() {
+  switch(cycleState) {
+    case 0:
+      MAR = PC;
+      activeAnims.add(new Anim(bPC, bMAR, "0000 " + binary(PC, 4), color(100, 255, 100)));
+      logAction("T1: Address Bus Active [PC -> MAR]");
+      cycleState = 1;
+      break;
+      
+    case 1:
+      PC = (PC + 1) & 0x0F;
+      logAction("T2: Clock Edge [PC++]");
+      cycleState = 2;
+      break;
+      
+    case 2:
+      IR = RAM[MAR];
+      activeAnims.add(new Anim(bRAM, bIR, binary(IR, 8), color(100, 210, 255)));
+      logAction("T3: Data Bus Active [RAM -> IR]");
+      cycleState = 3;
+      break;
+      
+    case 3:
+      int opcode = (IR >> 4) & 0x0F;
+      int addr = IR & 0x0F;
+      logAction("T4: Instruction Decoder Processing: " + binary(opcode, 4));
+      
+      if (opcode >= 0x0 && opcode <= 0x5) { // LDA, ADD, SUB, MUL, DIV, STA
+        MAR = addr;
+        activeAnims.add(new Anim(bIR, bMAR, "0000 " + binary(addr, 4), color(255, 255, 110)));
+        logAction("    -> Routing lower nibble to MAR");
+        cycleState = 4;
+      } else if (opcode == 0xE) { // OUT
+        OUT_REG = A;
+        activeAnims.add(new Anim(bA, bOUT, binary(A, 8), color(255, 140, 40)));
+        logAction("    -> Transferred Accumulator to Output");
+        cycleState = 0; 
+      } else if (opcode == 0xF) { // HLT
+        isRunning = false;
+        logAction("CRITICAL HLT DETECTED: Execution completed.");
+        cycleState = 0;
+      } else { cycleState = 0; }
+      break;
+      
+    case 4:
+      int opType = (IR >> 4) & 0x0F;
+      if (opType == 0x0) { // LDA
+        A = RAM[MAR];
+        activeAnims.add(new Anim(bRAM, bA, binary(A, 8), color(100, 255, 150)));
+        logAction("T5: Loaded data " + A + " from RAM -> Acc A");
+        cycleState = 0;
+      } else if (opType >= 0x1 && opType <= 0x4) { // Arithmetic Prep (ADD, SUB, MUL, DIV)
+        B = RAM[MAR];
+        activeAnims.add(new Anim(bRAM, bB, binary(B, 8), color(200, 150, 255)));
+        logAction("T5: Routed memory byte " + B + " -> B Register");
+        cycleState = 5;
+      } else if (opType == 0x5) { // STA
+        RAM[MAR] = A;
+        activeAnims.add(new Anim(bA, bRAM, binary(A, 8), color(150, 255, 150)));
+        logAction("T5: Stored Accumulator " + A + " -> RAM[" + MAR + "]");
+        cycleState = 0;
+      } else { cycleState = 0; }
+      break;
+      
+    case 5: // ALU Arithmetic Compute
+      int finalOp = (IR >> 4) & 0x0F;
+      int oldA = A;
+      
+      if (finalOp == 0x1) A = (A + B) & 0xFF;
+      else if (finalOp == 0x2) A = (A - B) & 0xFF;
+      else if (finalOp == 0x3) A = (A * B) & 0xFF;
+      else if (finalOp == 0x4) A = (B != 0) ? ((A / B) & 0xFF) : 0;
+      
+      activeAnims.add(new Anim(bALU, bA, binary(A, 8), color(255, 75, 75)));
+      
+      String opStr = finalOp==1 ? "+" : finalOp==2 ? "-" : finalOp==3 ? "*" : "/";
+      logAction("T6: ALU Math Complete [" + oldA + " " + opStr + " " + B + " = " + A + "] -> Acc A");
+      cycleState = 0;
+      break;
+  }
+  if(!mousePressed) scrollOffset = -9999; 
+}
+
+void logAction(String msg) {
+  executionLog.add(msg);
+}
+
+void mousePressed() {
+  for(Button btn : buttons) {
+    if(btn.clicked(mouseX, mouseY)) {
+      if(btn.cmd == -1) { isRunning = true; lastTick = millis(); logAction("SYSTEM: Clock Active."); } 
+      else if (btn.cmd == -2) { isRunning = false; logAction("SYSTEM: Clock Suspended."); } 
+      else if (btn.cmd == -3) { 
+        isRunning = false; PC = 0; A = 0; B = 0; OUT_REG = 0; IR = 0; MAR = 0; ALU_RES = 0; cycleState = 0; 
+        activeAnims.clear(); logAction("SYSTEM: Register Wipe Complete."); 
+      } 
+      else if (btn.cmd == -4) { 
+        speedMode = (speedMode + 1) % 3;
+        if(speedMode == 0) { CLOCK_SPEED = 900; animSpeed = 0.04; }
+        if(speedMode == 1) { CLOCK_SPEED = 2200; animSpeed = 0.015; }
+        if(speedMode == 2) { CLOCK_SPEED = 120; animSpeed = 0.12; }
+      } 
+      else if (btn.cmd == -5) { loadDefaultProgram(); }
+      return; 
+    }
+  }
+  
+  float ry = height * 0.615;
+  if(mouseX > width*0.05 && mouseX < width*0.47 && mouseY > ry + height*0.04 && mouseY < ry + height*0.27) {
+    int clickedRow = int((mouseY - (ry + height * 0.065)) / (height * 0.026));
+    if(clickedRow >= 0 && clickedRow < 8) {
+      int selectedIndex = clickedRow;
+      if (mouseX > width * 0.25) selectedIndex += 8;
+      RAM[selectedIndex] = (RAM[selectedIndex] + 8) & 0xFF;
+      logAction("USER INPUT: Modified RAM[" + selectedIndex + "] -> " + RAM[selectedIndex]);
+    }
+  }
+}
+
+// =============================================================================
+// ENCAPSULATED VISUALIZATION INTERFACE MODULES
+// =============================================================================
+
+class Block {
+  float x, y, w, h;
+  String name;
+  String val = "";
+  
+  Block(float x, float y, float w, float h, String name) {
+    this.x = x; this.y = y; this.w = w; this.h = h; this.name = name;
+  }
+  
+  void display() {
+    float tSize = min(width, height);
+    rectMode(CENTER);
+    fill(245, 248, 252);
+    stroke(35, 45, 60); strokeWeight(2);
+    rect(x, y, w, h, 5);
+    
+    stroke(110, 130, 155); strokeWeight(4);
+    if(x < busX) line(x + w/2, y, busX, y);
+    else line(busX, y, x - w/2, y);
+    
+    fill(40, 50, 70); textAlign(CENTER, CENTER);
+    textSize(tSize * 0.02);
+    text(name, x, y - (h * 0.18));
+    
+    fill(210, 20, 20); 
+    textSize(tSize * 0.025);
+    if(!val.equals("")) text(val, x, y + (h * 0.24));
+  }
+}
+
+class Button {
+  float x, y, w, h;
+  String label;
+  int cmd;
+  
+  Button(float x, float y, float w, float h, String label, int cmd) {
+    this.x = x; this.y = y; this.w = w; this.h = h;
+    this.label = label; this.cmd = cmd;
+  }
+  
+  void display() {
+    float tSize = min(width, height);
+    rectMode(CENTER);
+    if(cmd == -5) fill(32, 125, 82); 
+    else if(cmd == -1 && isRunning) fill(180, 50, 50); 
+    else fill(46, 80, 130);
+    
+    stroke(255); strokeWeight(1.2);
+    rect(x, y, w, h, 6);
+    fill(255); textAlign(CENTER, CENTER);
+    textSize(tSize * 0.025);
+    text(label, x, y);
+  }
+  
+  boolean clicked(float mx, float my) {
+    return (mx > x - w/2 && mx < x + w/2 && my > y - h/2 && my < y + h/2);
+  }
+}
+
+class Anim {
+  Block src, dst;
+  String data;
+  color c;
+  float progress = 0;
+  boolean isDone = false;
+  
+  Anim(Block src, Block dst, String data, color c) {
+    this.src = src; this.dst = dst; this.data = data; this.c = c;
+  }
+  
+  void update(float currentSpeed) {
+    progress += currentSpeed;
+    if (progress >= 1.0) isDone = true;
+  }
+  
+  void display() {
+    if (isDone) return;
+    float px, py;
+    if (progress < 0.33) {
+      px = lerp(src.x, busX, progress / 0.33); py = src.y;
+    } else if (progress < 0.66) {
+      px = busX; py = lerp(src.y, dst.y, (progress - 0.33) / 0.33);
+    } else {
+      px = lerp(busX, dst.x, (progress - 0.66) / 0.34); py = dst.y;
+    }
+    
+    float tSize = min(width, height);
+    fill(c); stroke(255); strokeWeight(1.5);
+    rectMode(CENTER);
+    rect(px, py, width * 0.16, height * 0.03, 4); 
+    fill(0); textAlign(CENTER, CENTER); textSize(tSize * 0.016);
+    text(data, px, py);
+  }
+}
